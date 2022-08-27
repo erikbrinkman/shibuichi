@@ -1,0 +1,14 @@
+[package]
+name = "shibuichi"
+description = "a simple zsh prompt preprocessor to add git integration"
+license = "MIT"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+clap = { version = "3.2", features = ["derive"] }
+dirs = "3.0.1"
+git2 = "0.14"
+log = "0.4"
+stderrlog = "0.5"
+url = "2.2"

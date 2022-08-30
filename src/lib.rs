@@ -1,9 +1,174 @@
 //! Module for expanding a prompt
-use log::warn;
+use nom::{
+    branch::alt,
+    bytes::complete::{escaped, is_not, tag, take_until},
+    character::complete::{anychar, char, i64, none_of, one_of},
+    combinator::{map, opt},
+    multi::many0,
+    sequence::{delimited, pair, preceded, terminated, tuple},
+    Finish, IResult,
+};
 use std::io;
 use std::io::Write;
-use std::mem;
+
 pub mod util;
+
+#[derive(Debug, PartialEq)]
+struct Escape(char);
+
+#[derive(Debug, PartialEq)]
+struct NumericEscape(Option<i64>, char);
+
+#[derive(Debug, PartialEq)]
+struct DateFormat<'a>(&'a str);
+
+#[derive(Debug, PartialEq)]
+struct NamedColor<'a> {
+    num: Option<i64>,
+    foreground: bool,
+    name: &'a str,
+}
+
+#[derive(Debug, PartialEq)]
+struct EscapeLiteral<'a>(&'a str);
+
+#[derive(Debug, PartialEq)]
+struct Conditional<'a> {
+    num: Option<i64>,
+    code: char,
+    delim: char,
+    true_branch: Vec<Element<'a>>,
+    false_branch: Vec<Element<'a>>,
+}
+
+#[derive(Debug, PartialEq)]
+struct Truncation<'a> {
+    num: Option<i64>,
+    left: bool,
+    replacement: &'a str,
+}
+
+#[derive(Debug, PartialEq)]
+enum Element<'a> {
+    Character(char),
+    Escape(Escape),
+    NumericEscape(NumericEscape),
+    DateFormat(DateFormat<'a>),
+    NamedColor(NamedColor<'a>),
+    EscapeLiteral(EscapeLiteral<'a>),
+    Conditional(Conditional<'a>),
+    Truncation(Truncation<'a>),
+}
+
+fn escape(input: &str) -> IResult<&str, Escape> {
+    let chars = one_of("%)lMny#?eh!iIjLTt@*wWBbEUuSsDrpqx");
+    map(preceded(char('%'), chars), Escape)(input)
+}
+
+fn numeric_escape(input: &str) -> IResult<&str, NumericEscape> {
+    let pat = preceded(char('%'), pair(opt(i64), one_of("m_^d/~Nc.CvFfKkG")));
+    map(pat, |(num, chr)| NumericEscape(num, chr))(input)
+}
+
+fn date_format(input: &str) -> IResult<&str, DateFormat> {
+    map(delimited(tag("%D{"), is_not("}"), char('}')), DateFormat)(input)
+}
+
+fn named_color(input: &str) -> IResult<&str, NamedColor> {
+    let (input, (_, num, flag, _, name, _)) = tuple((
+        char('%'),
+        opt(i64),
+        one_of("FK"),
+        char('{'),
+        is_not("}"),
+        char('}'),
+    ))(input)?;
+    Ok((
+        input,
+        NamedColor {
+            num,
+            foreground: flag == 'F',
+            name,
+        },
+    ))
+}
+
+fn escape_literal(input: &str) -> IResult<&str, EscapeLiteral> {
+    // NOTE this will fail if we see `%{%%}`, but maybe that's okay?
+    map(
+        delimited(tag("%{"), take_until("%}"), tag("%}")),
+        EscapeLiteral,
+    )(input)
+}
+
+fn elements_until<'a>(stop: &'a Element) -> impl Fn(&str) -> IResult<&str, Vec<Element>> + 'a {
+    move |mut inp| {
+        let mut elems = Vec::new();
+        while {
+            let (nxt, elem) = element(inp)?;
+            inp = nxt;
+            if &elem == stop {
+                false
+            } else {
+                elems.push(elem);
+                true
+            }
+        } {}
+        Ok((inp, elems))
+    }
+}
+
+fn conditional(input: &str) -> IResult<&str, Conditional> {
+    let (input, (_, num, _, code, delim)) = tuple((
+        char('%'),
+        opt(i64),
+        char('('),
+        one_of("!#?_C/c.~DdegjLlSTtvVwGymsopqx"),
+        anychar,
+    ))(input)?;
+    let (input, true_branch) = elements_until(&Element::Character(delim))(input)?;
+    let (input, false_branch) = elements_until(&Element::Character(')'))(input)?;
+    Ok((
+        input,
+        Conditional {
+            num,
+            code,
+            delim,
+            true_branch,
+            false_branch,
+        },
+    ))
+}
+
+fn truncation(input: &str) -> IResult<&str, Truncation> {
+    let (input, (num, delim)) = preceded(char('%'), pair(opt(i64), one_of("<>")))(input)?;
+    let blocked = format!("\\{}", delim);
+    let (input, replacement) = terminated(
+        alt((escaped(none_of(&*blocked), '\\', anychar), tag(""))),
+        char(delim),
+    )(input)?;
+    Ok((
+        input,
+        Truncation {
+            num,
+            left: delim == '<',
+            replacement,
+        },
+    ))
+}
+
+fn element(input: &str) -> IResult<&str, Element> {
+    alt((
+        map(truncation, Element::Truncation),
+        map(conditional, Element::Conditional),
+        map(date_format, Element::DateFormat),
+        map(named_color, Element::NamedColor),
+        map(escape_literal, Element::EscapeLiteral),
+        map(numeric_escape, Element::NumericEscape),
+        map(escape, Element::Escape),
+        map(anychar, Element::Character),
+    ))(input)
+}
 
 /// The domain of the upstream remote, defaults to [Domain::Git]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,238 +194,135 @@ pub trait Info {
     fn git_stashes(&mut self) -> usize;
 }
 
-/// parses out a single command from an iterator
-fn parse_command(chars: &mut (impl Iterator<Item = char> + Clone)) -> (Option<char>, Option<i64>) {
-    let mut start = chars.clone();
-    let mut command = None;
-    let mut neg = false;
-    let mut num = None;
-    while match chars.next() {
-        Some('-') if num == None && !neg => {
-            neg = true;
-            true
+trait Render {
+    fn render(&self, out: &mut impl Write, info: &mut impl Info) -> io::Result<()>;
+}
+
+impl Render for Escape {
+    fn render(&self, out: &mut impl Write, info: &mut impl Info) -> io::Result<()> {
+        match self {
+            Escape('r') => write!(out, "{}", info.git_branch()),
+            Escape('p') => write!(out, "{}", info.git_remote_ahead()),
+            Escape('q') => write!(out, "{}", info.git_remote_behind()),
+            Escape('x') => write!(out, "{}", info.git_stashes()),
+            Escape(chr) => write!(out, "%{}", chr),
         }
-        None | Some('-') => {
-            warn!("invalid numeric escape");
-            // rewind
-            num = None;
-            mem::swap(chars, &mut start);
-            false
+    }
+}
+
+impl Render for NumericEscape {
+    fn render(&self, out: &mut impl Write, _: &mut impl Info) -> io::Result<()> {
+        match self {
+            NumericEscape(Some(num), chr) => write!(out, "%{}{}", num, chr),
+            NumericEscape(None, chr) => write!(out, "%{}", chr),
         }
-        Some(chr) => match chr.to_digit(10) {
-            Some(dig) => {
-                num = match num {
-                    None => Some(dig as i64),
-                    Some(prev) => Some(prev * 10 + dig as i64),
+    }
+}
+
+impl<'a> Render for DateFormat<'a> {
+    fn render(&self, out: &mut impl Write, _: &mut impl Info) -> io::Result<()> {
+        let DateFormat(format) = self;
+        write!(out, "%D{{{}}}", format)
+    }
+}
+
+impl<'a> Render for NamedColor<'a> {
+    fn render(&self, out: &mut impl Write, _: &mut impl Info) -> io::Result<()> {
+        let chr = if self.foreground { 'F' } else { 'K' };
+        match self.num {
+            Some(num) => write!(out, "%{}{}{{{}}}", num, chr, self.name),
+            None => write!(out, "%{}{{{}}}", chr, self.name),
+        }
+    }
+}
+
+impl<'a> Render for EscapeLiteral<'a> {
+    fn render(&self, out: &mut impl Write, _: &mut impl Info) -> io::Result<()> {
+        let EscapeLiteral(literal) = self;
+        write!(out, "%{{{}%}}", literal)
+    }
+}
+
+impl<T: Render> Render for [T] {
+    fn render(&self, out: &mut impl Write, info: &mut impl Info) -> io::Result<()> {
+        for elem in self.iter() {
+            elem.render(out, info)?;
+        }
+        Ok(())
+    }
+}
+
+impl<'a> Render for Conditional<'a> {
+    fn render(&self, out: &mut impl Write, info: &mut impl Info) -> io::Result<()> {
+        match self.code {
+            code @ ('G' | 'y' | 'm' | 's' | 'o' | 'p' | 'q' | 'x') => {
+                let num = self.num.unwrap_or(0);
+                if match code {
+                    'G' => info.git_exists(),
+                    'y' => info.git_dirty(),
+                    'm' => info.git_modified(),
+                    's' => info.git_staged(),
+                    'o' => info.git_remote_domain() as i64 == num,
+                    'p' => info.git_remote_ahead() as i64 >= num,
+                    'q' => info.git_remote_behind() as i64 >= num,
+                    'x' => info.git_stashes() as i64 >= num,
+                    _ => panic!(),
+                } {
+                    self.true_branch.render(out, info)
+                } else {
+                    self.false_branch.render(out, info)
+                }
+            }
+            code => {
+                write!(out, "%")?;
+                match self.num {
+                    Some(num) => write!(out, "{}", num)?,
+                    None => (),
                 };
-                true
+                write!(out, "({}{}", code, self.delim)?;
+                self.true_branch.render(out, info)?;
+                write!(out, "{}", self.delim)?;
+                self.false_branch.render(out, info)?;
+                write!(out, ")")
             }
-            None => {
-                command = Some(chr);
-                false
-            }
-        },
-    } {}
-    (command, num.map(|n| if neg { -n } else { n }))
-}
-
-/// a [Write] implemetor that discards everything
-struct NullWrite;
-
-impl Write for NullWrite {
-    fn write(&mut self, buff: &[u8]) -> Result<usize, io::Error> {
-        Ok(buff.len())
-    }
-    fn flush(&mut self) -> Result<(), io::Error> {
-        Ok(())
-    }
-}
-
-/// perform custom expansion on a character iterator
-///
-/// This terminates when it finds an unescaped version of char
-fn expand_hit(
-    info: &mut impl Info,
-    chars: &mut (impl DoubleEndedIterator<Item = char> + Clone),
-    out: &mut impl Write,
-    stop: Option<char>,
-) -> io::Result<()> {
-    while let Some(chr) = chars.next() {
-        if chr == '%' {
-            match parse_command(chars) {
-                // unterminated %
-                (None, _) => write!(out, "%")?,
-                // commands that don't have numeric arguments
-                // NOTE for FfKk they can be trailed by {...} but since that can't contain special
-                // characters we don't have to treat it differently
-                (
-                    Some(
-                        ept @ ('%' | ')' | 'l' | 'M' | 'n' | 'y' | '#' | '?' | 'e' | 'h' | '!'
-                        | 'i' | 'I' | 'j' | 'L' | 'T' | 't' | '@' | '*' | 'w' | 'W' | 'B'
-                        | 'b' | 'E' | 'U' | 'u' | 'S' | 's' | 'm' | '_' | '^' | 'd' | '/'
-                        | '~' | 'N' | 'c' | '.' | 'C' | 'v' | 'F' | 'f' | 'K' | 'k' | 'G'),
-                    ),
-                    None,
-                ) => write!(out, "%{}", ept)?,
-                // commands that have numeric arguments
-                (
-                    Some(
-                        arg @ ('m' | '_' | '^' | 'd' | '/' | '~' | 'N' | 'c' | '.' | 'C' | 'v'
-                        | 'F' | 'f' | 'K' | 'k' | 'G'),
-                    ),
-                    Some(num),
-                ) => write!(out, "%{}{}", num, arg)?,
-                // date string can have a special %D{...} after it
-                (Some('D'), None) => {
-                    write!(out, "%D")?;
-                    match chars.next() {
-                        Some('{') => {
-                            write!(out, "{{")?;
-                            for scan in chars.by_ref() {
-                                write!(out, "{}", scan)?;
-                                if scan == '}' {
-                                    break;
-                                }
-                            }
-                        }
-                        None => (),
-                        Some(_) => {
-                            // rewind as not a {
-                            chars.next_back();
-                        }
-                    }
-                }
-                // zsh escaped literals
-                (Some('{'), num) => {
-                    match num {
-                        None => write!(out, "%{{")?,
-                        Some(pad) => write!(out, "%{}{{", pad)?,
-                    }
-                    // scan until we see "%}" and ignore everything else
-                    let mut last_paren = false;
-                    for scan in chars.by_ref() {
-                        write!(out, "{}", scan)?;
-                        match scan {
-                            '%' => last_paren = !last_paren,
-                            '}' if last_paren => break,
-                            _ => last_paren = false,
-                        }
-                    }
-                }
-                // truncation directives
-                (Some(direc @ ('<' | '>' | '[')), num) => {
-                    // NOTE we don't handle the non-standard deprecated form %[num...]
-                    match num {
-                        None => write!(out, "%{}", direc)?,
-                        Some(pad) => write!(out, "%{}{}", pad, direc)?,
-                    }
-                    let tail = match direc {
-                        '<' => '<',
-                        '>' => '>',
-                        '[' => ']',
-                        _ => panic!(),
-                    };
-                    for scan in chars.by_ref() {
-                        write!(out, "{}", scan)?;
-                        if scan == tail {
-                            break;
-                        }
-                    }
-                }
-                // conditionals
-                (Some('('), num) => {
-                    match (chars.next(), chars.next()) {
-                        // built-in ternaries
-                        (
-                            Some(
-                                pred @ ('!' | '#' | '?' | '_' | 'C' | '/' | 'c' | '.' | '~' | 'D'
-                                | 'd' | 'e' | 'g' | 'j' | 'L' | 'l' | 'S' | 'T' | 't' | 'v'
-                                | 'V' | 'w'),
-                            ),
-                            Some(delim),
-                        ) => {
-                            match num {
-                                None => write!(out, "%(")?,
-                                Some(pad) => write!(out, "%{}(", pad)?,
-                            };
-                            write!(out, "{}{}", pred, delim)?;
-                            expand_hit(info, chars, out, Some(delim))?;
-                            write!(out, "{}", delim)?;
-                            expand_hit(info, chars, out, Some(')'))?;
-                            write!(out, ")")?;
-                        }
-                        // custom ternaries
-                        (
-                            Some(pred @ ('G' | 'y' | 'm' | 's' | 'o' | 'p' | 'q' | 'x')),
-                            Some(delim),
-                        ) => {
-                            let num = num.unwrap_or(0);
-                            if match pred {
-                                'G' => info.git_exists(),
-                                'y' => info.git_dirty(),
-                                'm' => info.git_modified(),
-                                's' => info.git_staged(),
-                                'o' => info.git_remote_domain() as i64 == num,
-                                'p' => info.git_remote_ahead() as i64 >= num,
-                                'q' => info.git_remote_behind() as i64 >= num,
-                                'x' => info.git_stashes() as i64 >= num,
-                                _ => panic!("unhandled custom ternary: '{}'", pred),
-                            } {
-                                expand_hit(info, chars, out, Some(delim))?;
-                                expand_hit(info, chars, &mut NullWrite, Some(')'))?;
-                            } else {
-                                expand_hit(info, chars, &mut NullWrite, Some(delim))?;
-                                expand_hit(info, chars, out, Some(')'))?;
-                            };
-                        }
-                        // missing characters
-                        (first, second) => {
-                            match (first, second) {
-                                (Some(flag), Some(_)) => warn!("invalid ternary flag: '{}'", flag),
-                                _ => warn!("prompt ended during a ternary sequence"),
-                            }
-                            match num {
-                                None => write!(out, "%(")?,
-                                Some(pad) => write!(out, "%{}(", pad)?,
-                            };
-                            if first.is_some() {
-                                chars.next_back();
-                            }
-                            if second.is_some() {
-                                chars.next_back();
-                            }
-                        }
-                    }
-                }
-                // custom expansions
-                (Some('r'), None) => write!(out, "{}", info.git_branch())?,
-                (Some('p'), None) => write!(out, "{}", info.git_remote_ahead())?,
-                (Some('q'), None) => write!(out, "{}", info.git_remote_behind())?,
-                (Some('x'), None) => write!(out, "{}", info.git_stashes())?,
-                // any unhandled escape
-                (Some(nxt), None) => {
-                    warn!("use of unknown escape: '%{}'", nxt);
-                    write!(out, "%{}", nxt)?;
-                }
-                (Some(nxt), Some(num)) => {
-                    warn!("use of unknown escape: '%{}{}'", num, nxt);
-                    write!(out, "%{}{}", num, nxt)?;
-                }
-            };
-        } else if Some(chr) == stop {
-            return Ok(());
-        } else {
-            write!(out, "{}", chr)?;
         }
     }
-    if let Some(chr) = stop {
-        Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            format!("no matching ternary close: '{}'", chr),
-        ))
-    } else {
-        Ok(())
+}
+
+impl<'a> Render for Truncation<'a> {
+    fn render(&self, out: &mut impl Write, _: &mut impl Info) -> io::Result<()> {
+        let chr = if self.left { '<' } else { '>' };
+        match self.num {
+            Some(num) => write!(out, "%{}{}{}{}", num, chr, self.replacement, chr),
+            None => write!(out, "%{}{}{}", chr, self.replacement, chr),
+        }
     }
+}
+
+impl<'a> Render for Element<'a> {
+    fn render(&self, out: &mut impl Write, info: &mut impl Info) -> io::Result<()> {
+        match self {
+            Element::Character(chr) => write!(out, "{}", chr),
+            Element::Escape(esc) => esc.render(out, info),
+            Element::NumericEscape(num_esc) => num_esc.render(out, info),
+            Element::DateFormat(dfmt) => dfmt.render(out, info),
+            Element::NamedColor(color) => color.render(out, info),
+            Element::EscapeLiteral(esc) => esc.render(out, info),
+            Element::Conditional(cond) => cond.render(out, info),
+            Element::Truncation(trunc) => trunc.render(out, info),
+        }
+    }
+}
+
+/// Parses the input into a vector of elements
+///
+/// This is the intermediate representation before re-rendering.
+fn parse(input: &str) -> Vec<Element> {
+    // NOTE unwrap should be safe because we always accept an arbitrary character
+    let (rem, elems) = many0(element)(input).finish().unwrap();
+    // NOTE should also be safe for same reason
+    assert_eq!(rem, "");
+    elems
 }
 
 /// Expand a shibuichi prompt string
@@ -299,46 +361,115 @@ pub fn expand(
     info: &mut impl Info,
     out: &mut impl Write,
 ) -> io::Result<()> {
-    let mut chars = prompt.as_ref().chars();
-    expand_hit(info, &mut chars, out, None)
+    // NOTE if we use fold_many0 we could avoid this outer vector allocation, but then it would
+    // require much better io error handling
+    let elems = parse(prompt.as_ref());
+    elems.render(out, info)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{expand, parse_command, Domain, Info};
+mod parse_tests {
+    use super::{
+        parse, Conditional, DateFormat, Element, Escape, EscapeLiteral, NamedColor, NumericEscape,
+        Truncation,
+    };
+
+    #[test]
+    fn simple_escapes() {
+        let expected = [
+            Element::Escape(Escape('%')),
+            Element::Character(' '),
+            Element::NumericEscape(NumericEscape(Some(-3), '~')),
+            Element::Character(' '),
+            Element::Escape(Escape('D')),
+            Element::Character(' '),
+            Element::NumericEscape(NumericEscape(None, 'v')),
+        ];
+        let elems = parse("%% %-3~ %D %v");
+        assert_eq!(elems, expected);
+    }
+
+    #[test]
+    fn date_format() {
+        let expected = [Element::DateFormat(DateFormat("%H:%M:%S.%."))];
+        let elems = parse("%D{%H:%M:%S.%.}");
+        assert_eq!(elems, expected);
+    }
+
+    #[test]
+    fn named_color() {
+        let expected = [
+            Element::NamedColor(NamedColor {
+                num: None,
+                foreground: true,
+                name: "red",
+            }),
+            Element::Character(' '),
+            Element::NamedColor(NamedColor {
+                num: Some(0),
+                foreground: false,
+                name: "black",
+            }),
+        ];
+        let elems = parse("%F{red} %0K{black}");
+        assert_eq!(elems, expected);
+    }
+
+    #[test]
+    fn escape_literal() {
+        let expected = [Element::EscapeLiteral(EscapeLiteral("$terminfo[smacs]%G"))];
+        let elems = parse("%{$terminfo[smacs]%G%}");
+        assert_eq!(elems, expected);
+    }
+
+    #[test]
+    fn truncation() {
+        let expected = [
+            Element::Truncation(Truncation {
+                num: Some(8),
+                left: true,
+                replacement: "..",
+            }),
+            Element::Truncation(Truncation {
+                num: None,
+                left: true,
+                replacement: "",
+            }),
+            Element::Character(' '),
+            Element::Truncation(Truncation {
+                num: None,
+                left: false,
+                replacement: "\\>",
+            }),
+        ];
+        let elems = parse("%8<..<%<< %>\\>>");
+        assert_eq!(elems, expected);
+    }
+
+    #[test]
+    fn conditional() {
+        let expected = [Element::Conditional(Conditional {
+            num: None,
+            code: 'C',
+            delim: '.',
+            true_branch: vec![Element::Character('a')],
+            false_branch: vec![Element::Conditional(Conditional {
+                num: Some(1),
+                code: 'g',
+                delim: '#',
+                true_branch: vec![Element::Character('b')],
+                false_branch: vec![Element::Character('c')],
+            })],
+        })];
+        let elems = parse("%(C.a.%1(g#b#c))");
+        assert_eq!(elems, expected);
+    }
+}
+
+#[cfg(test)]
+mod expand_tests {
+    use super::{expand, Domain, Info};
     use std::str;
-
-    #[test]
-    fn easy_command() {
-        let mut iter = "d".chars();
-        let res = parse_command(&mut iter);
-        assert_eq!(res, (Some('d'), None));
-        assert_eq!(iter.next(), None);
-    }
-
-    #[test]
-    fn pos_num_command() {
-        let mut iter = "5d".chars();
-        let res = parse_command(&mut iter);
-        assert_eq!(res, (Some('d'), Some(5)));
-        assert_eq!(iter.next(), None);
-    }
-
-    #[test]
-    fn neg_num_command() {
-        let mut iter = "-25d".chars();
-        let res = parse_command(&mut iter);
-        assert_eq!(res, (Some('d'), Some(-25)));
-        assert_eq!(iter.next(), None);
-    }
-
-    #[test]
-    fn double_neg() {
-        let mut iter = "-25-d".chars();
-        let res = parse_command(&mut iter);
-        assert_eq!(res, (None, None));
-        assert_eq!(iter.next(), Some('-'));
-    }
 
     struct NoInfo;
 
@@ -381,7 +512,7 @@ mod tests {
 
     #[test]
     fn builtin() {
-        let builtins = "%% %-3~ %D{%f-%K-%L} %{seq%3G%} %v %(C.a.%(g#b#c)) %10<...<%~%<<%# ";
+        let builtins = "%% %-3~ %D{%f-%K-%L} %F{red} %{seq%3G%} %v %(C.a.%(g#b#c)) %10<...<%~%<<%# ";
         let mut result = Vec::new();
         expand(builtins, &mut NoInfo, &mut result).unwrap();
         assert_eq!(str::from_utf8(&result).unwrap(), builtins);

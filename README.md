@@ -37,6 +37,11 @@ expansions, substituting them on the fly:
    the current branch.
  - `x` - True if there are at least `n` stashes.
 
+Finally the directory command is extended in a slightly breaking change, where
+`%/{:replacement:prefix:...}` takes multiple prefix-replacement pairs to apply
+to the path. Any delimiter character can be specified, and backslash escapes
+are honored.  `%~` and `%/{:~:$HOME}` should be roughly equivalent.
+
 Installation
 ------------
 

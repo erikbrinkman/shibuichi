@@ -9,7 +9,5 @@ edition = "2021"
 clap = { version = "3", features = ["derive"] }
 dirs = "3"
 git2 = "0.14"
-log = "0.4"
 nom = "7"
-stderrlog = "0.5"
 url = "2.2"

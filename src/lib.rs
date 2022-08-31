@@ -4,12 +4,14 @@ use nom::{
     bytes::complete::{escaped, is_not, tag, take_until},
     character::complete::{anychar, char, i64, none_of, one_of},
     combinator::{map, opt},
-    multi::many0,
-    sequence::{delimited, pair, preceded, terminated, tuple},
+    multi::{many0, separated_list0},
+    sequence::{delimited, pair, preceded, separated_pair, terminated, tuple},
     Finish, IResult,
 };
+use std::collections::VecDeque;
 use std::io;
 use std::io::Write;
+use std::path::Path;
 
 pub mod util;
 
@@ -27,6 +29,13 @@ struct NamedColor<'a> {
     num: Option<i64>,
     foreground: bool,
     name: &'a str,
+}
+
+#[derive(Debug, PartialEq)]
+struct PathPrefix<'a> {
+    num: Option<i64>,
+    delim: char,
+    prefix_subs: Vec<(&'a str, &'a str)>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -58,6 +67,7 @@ enum Element<'a> {
     EscapeLiteral(EscapeLiteral<'a>),
     Conditional(Conditional<'a>),
     Truncation(Truncation<'a>),
+    PathPrefix(PathPrefix<'a>),
 }
 
 fn escape(input: &str) -> IResult<&str, Escape> {
@@ -89,6 +99,32 @@ fn named_color(input: &str) -> IResult<&str, NamedColor> {
             num,
             foreground: flag == 'F',
             name,
+        },
+    ))
+}
+
+// FIXME document this
+fn path_prefix(input: &str) -> IResult<&str, PathPrefix> {
+    let (input, (_, num, _, _, delim)) =
+        tuple((char('%'), opt(i64), one_of("d/"), char('{'), anychar))(input)?;
+    let delim_str = format!("{}}}", delim);
+    let (input, prefix_subs) = terminated(
+        separated_list0(
+            char(delim),
+            separated_pair(
+                alt((escaped(none_of(&*delim_str), '\\', anychar), tag(""))),
+                char(delim),
+                escaped(none_of(&*delim_str), '\\', anychar),
+            ),
+        ),
+        char('}'),
+    )(input)?;
+    Ok((
+        input,
+        PathPrefix {
+            num,
+            delim,
+            prefix_subs,
         },
     ))
 }
@@ -163,6 +199,7 @@ fn element(input: &str) -> IResult<&str, Element> {
         map(conditional, Element::Conditional),
         map(date_format, Element::DateFormat),
         map(named_color, Element::NamedColor),
+        map(path_prefix, Element::PathPrefix),
         map(escape_literal, Element::EscapeLiteral),
         map(numeric_escape, Element::NumericEscape),
         map(escape, Element::Escape),
@@ -183,6 +220,7 @@ pub enum Domain {
 
 /// Trait for any information necessary to proper expansion
 pub trait Info {
+    fn current_path(&mut self) -> &Path;
     fn git_exists(&mut self) -> bool;
     fn git_dirty(&mut self) -> bool;
     fn git_modified(&mut self) -> bool;
@@ -233,6 +271,43 @@ impl<'a> Render for NamedColor<'a> {
             Some(num) => write!(out, "%{}{}{{{}}}", num, chr, self.name),
             None => write!(out, "%{}{{{}}}", chr, self.name),
         }
+    }
+}
+
+impl<'a> Render for PathPrefix<'a> {
+    fn render(&self, out: &mut impl Write, info: &mut impl Info) -> io::Result<()> {
+        // FIXME ideally we handle if a path is simlinked we handle that too
+        let mut wd = info.current_path().to_owned();
+        for (alias, prefix) in &self.prefix_subs {
+            // FIXME should we canonicalize here?
+            if let Ok(stripped) = wd.strip_prefix(prefix) {
+                wd = [alias.as_ref(), stripped].iter().collect();
+            }
+        }
+        match self.num.unwrap_or(0) {
+            0 => (),
+            num @ 1..=i64::MAX => {
+                let mut comps = VecDeque::new();
+                for comp in wd.iter() {
+                    comps.push_back(comp);
+                    if comps.len() == (num + 1) as usize {
+                        comps.pop_front();
+                    }
+                }
+                wd = comps.iter().collect();
+            }
+            num @ i64::MIN..=-1 => {
+                let mut comps = Vec::new();
+                for comp in wd.iter() {
+                    comps.push(comp);
+                    if comps.len() == -num as usize {
+                        break;
+                    }
+                }
+                wd = comps.iter().collect();
+            }
+        }
+        write!(out, "{}", wd.display())
     }
 }
 
@@ -310,6 +385,7 @@ impl<'a> Render for Element<'a> {
             Element::EscapeLiteral(esc) => esc.render(out, info),
             Element::Conditional(cond) => cond.render(out, info),
             Element::Truncation(trunc) => trunc.render(out, info),
+            Element::PathPrefix(path) => path.render(out, info),
         }
     }
 }
@@ -356,6 +432,11 @@ fn parse(input: &str) -> Vec<Element> {
 /// - `q` - True if the remote tracking branch is at least `n` commits *behind* of the current
 /// branch.
 /// - `x` - True if there are at least `n` stashes.
+///
+/// Finally the directory command is extended in a slightly breaking change, where
+/// `%/{:replacement:prefix:...}` takes multiple prefix-replacement pairs to apply to the path. Any
+/// delimiter character can be specified, and backslash escapes are honored.  `%~` and
+/// `%/{:~:$HOME}` should be roughly equivalent.
 pub fn expand(
     prompt: impl AsRef<str>,
     info: &mut impl Info,
@@ -371,7 +452,7 @@ pub fn expand(
 mod parse_tests {
     use super::{
         parse, Conditional, DateFormat, Element, Escape, EscapeLiteral, NamedColor, NumericEscape,
-        Truncation,
+        PathPrefix, Truncation,
     };
 
     #[test]
@@ -412,6 +493,25 @@ mod parse_tests {
             }),
         ];
         let elems = parse("%F{red} %0K{black}");
+        assert_eq!(elems, expected);
+    }
+
+    #[test]
+    fn path_prefix() {
+        let expected = [
+            Element::PathPrefix(PathPrefix {
+                num: None,
+                delim: '.',
+                prefix_subs: vec![],
+            }),
+            Element::Character(' '),
+            Element::PathPrefix(PathPrefix {
+                num: Some(-2),
+                delim: ':',
+                prefix_subs: vec![("home", "/home/user")],
+            }),
+        ];
+        let elems = parse("%/{.} %-2/{:home:/home/user}");
         assert_eq!(elems, expected);
     }
 
@@ -469,11 +569,16 @@ mod parse_tests {
 #[cfg(test)]
 mod expand_tests {
     use super::{expand, Domain, Info};
+    use std::path::{Path, PathBuf};
     use std::str;
 
     struct NoInfo;
 
     impl Info for NoInfo {
+        fn current_path(&mut self) -> &Path {
+            "".as_ref()
+        }
+
         fn git_exists(&mut self) -> bool {
             false
         }
@@ -512,7 +617,8 @@ mod expand_tests {
 
     #[test]
     fn builtin() {
-        let builtins = "%% %-3~ %D{%f-%K-%L} %F{red} %{seq%3G%} %v %(C.a.%(g#b#c)) %10<...<%~%<<%# ";
+        let builtins =
+            "%% %-3~ %D{%f-%K-%L} %F{red} %{seq%3G%} %v %(C.a.%(g#b#c)) %10<...<%~%<<%# ";
         let mut result = Vec::new();
         expand(builtins, &mut NoInfo, &mut result).unwrap();
         assert_eq!(str::from_utf8(&result).unwrap(), builtins);
@@ -538,6 +644,7 @@ mod expand_tests {
     }
 
     struct TestInfo {
+        path: PathBuf,
         dirty: bool,
         modified: bool,
         staged: bool,
@@ -549,6 +656,9 @@ mod expand_tests {
     }
 
     impl Info for TestInfo {
+        fn current_path(&mut self) -> &Path {
+            &self.path
+        }
         fn git_exists(&mut self) -> bool {
             true
         }
@@ -579,12 +689,13 @@ mod expand_tests {
     }
 
     #[test]
-    fn manual() {
+    fn git() {
         let mut result = Vec::new();
         let prompt = "%(G.%(y.d.)%(m.m.)%(s.s.) %0(o.g.)%1(o.h.)%2(o.l.)%3(o.b.)%4(o.a.) %1(p.%2(p.^%p.^).)%1(q.%2(q.v%q.v).)%1(x.%2(x.s%x.s).) %r.)";
 
         result.clear();
         let mut info = TestInfo {
+            path: PathBuf::from("/dev/random"),
             dirty: true,
             modified: true,
             staged: true,
@@ -599,6 +710,7 @@ mod expand_tests {
 
         result.clear();
         let mut info = TestInfo {
+            path: PathBuf::from("/home/user/sub/sub/dir"),
             dirty: true,
             modified: false,
             staged: false,
@@ -610,5 +722,37 @@ mod expand_tests {
         };
         expand(prompt, &mut info, &mut result).unwrap();
         assert_eq!(str::from_utf8(&result).unwrap(), "d a v2s3 feature");
+    }
+
+    #[test]
+    fn path() {
+        let mut result = Vec::new();
+        let mut info = TestInfo {
+            path: PathBuf::from("/home/user/sub/dir"),
+            dirty: true,
+            modified: false,
+            staged: false,
+            domain: Domain::Azure,
+            ahead: 0,
+            behind: 2,
+            branch: "feature",
+            stashes: 3,
+        };
+
+        result.clear();
+        expand("%/{:}", &mut info, &mut result).unwrap();
+        assert_eq!(str::from_utf8(&result).unwrap(), "/home/user/sub/dir");
+
+        result.clear();
+        expand("%/{:missing:/dev:~:/home/user}", &mut info, &mut result).unwrap();
+        assert_eq!(str::from_utf8(&result).unwrap(), "~/sub/dir");
+
+        result.clear();
+        expand("%-2/{:~:/home/user}", &mut info, &mut result).unwrap();
+        assert_eq!(str::from_utf8(&result).unwrap(), "~/sub");
+
+        result.clear();
+        expand("%2/{:}", &mut info, &mut result).unwrap();
+        assert_eq!(str::from_utf8(&result).unwrap(), "sub/dir");
     }
 }

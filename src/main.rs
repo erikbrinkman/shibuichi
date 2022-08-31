@@ -1,8 +1,10 @@
 //! The binary to run prompt substitution
-use clap::{ArgAction, Parser};
+use clap::Parser;
 use git2::{Branch, BranchType, Oid, Repository, StatusOptions};
 use shibuichi::{expand, util::ParsedScpUrl, Domain, Info};
+use std::env;
 use std::io::stdout;
+use std::path::{Path, PathBuf};
 use url::Url;
 
 /// preprocess an expanded zsh prompt string
@@ -12,19 +14,6 @@ struct Args {
     /// zsh style prompt to apply additional expansion to
     #[clap(value_parser)]
     prompt: String,
-
-    /// warn when unexpected things happen
-    ///
-    /// This is mainly to help debugging when prompts aren't being parsed as expected.
-    #[clap(short, long, action = ArgAction::Count)]
-    verbose: u8,
-
-    /// silence all logging
-    ///
-    /// This is a useful extra flag for the actual command line parsing to make sure that there are
-    /// no logs written.
-    #[clap(short, long)]
-    quiet: bool,
 }
 
 fn parse_git_origin(origin: &str) -> Option<String> {
@@ -146,6 +135,7 @@ impl CachedRepo {
 
 #[derive(Default)]
 struct Cache {
+    cached_path: Option<PathBuf>,
     cached_repo: CachedRepo,
     cached_remote_info: Option<(Domain, usize, usize)>,
     cached_branch: Option<String>,
@@ -180,6 +170,17 @@ impl Cache {
 }
 
 impl Info for Cache {
+    fn current_path(&mut self) -> &Path {
+        match &mut self.cached_path {
+            Some(buf) => buf,
+            buf @ None => {
+                *buf = Some(env::current_dir().unwrap_or_else(|_| PathBuf::new()));
+                buf.as_ref().unwrap()
+            }
+        }
+        .as_path()
+    }
+
     fn git_exists(&mut self) -> bool {
         self.cached_repo.get().is_some()
     }
@@ -232,14 +233,6 @@ impl Info for Cache {
 
 fn main() {
     let args = Args::parse();
-
-    stderrlog::new()
-        .module(module_path!())
-        .quiet(args.quiet)
-        .verbosity(args.verbose as usize)
-        .init()
-        .unwrap();
-
     expand(args.prompt, &mut Cache::default(), &mut stdout()).unwrap();
 }
 

@@ -11,6 +11,7 @@ use nom::{
 use std::collections::VecDeque;
 use std::io;
 use std::io::Write;
+use std::path;
 use std::path::Path;
 
 pub mod util;
@@ -103,7 +104,6 @@ fn named_color(input: &str) -> IResult<&str, NamedColor> {
     ))
 }
 
-// FIXME document this
 fn path_prefix(input: &str) -> IResult<&str, PathPrefix> {
     let (input, (_, num, _, _, delim)) =
         tuple((char('%'), opt(i64), one_of("d/"), char('{'), anychar))(input)?;
@@ -276,10 +276,8 @@ impl<'a> Render for NamedColor<'a> {
 
 impl<'a> Render for PathPrefix<'a> {
     fn render(&self, out: &mut impl Write, info: &mut impl Info) -> io::Result<()> {
-        // FIXME ideally we handle if a path is simlinked we handle that too
         let mut wd = info.current_path().to_owned();
         for (alias, prefix) in &self.prefix_subs {
-            // FIXME should we canonicalize here?
             if let Ok(stripped) = wd.strip_prefix(prefix) {
                 wd = [alias.as_ref(), stripped].iter().collect();
             }
@@ -307,7 +305,15 @@ impl<'a> Render for PathPrefix<'a> {
                 wd = comps.iter().collect();
             }
         }
-        write!(out, "{}", wd.display())
+        let lossy = wd.to_string_lossy();
+        let mut lossy_chars = lossy.chars();
+        let output =
+            if lossy_chars.next() == Some(path::MAIN_SEPARATOR) && lossy_chars.next().is_none() {
+                &lossy
+            } else {
+                lossy.strip_suffix(path::MAIN_SEPARATOR).unwrap_or(&lossy)
+            };
+        write!(out, "{}", output)
     }
 }
 
@@ -434,9 +440,13 @@ fn parse(input: &str) -> Vec<Element> {
 /// - `x` - True if there are at least `n` stashes.
 ///
 /// Finally the directory command is extended in a slightly breaking change, where
-/// `%/{:replacement:prefix:...}` takes multiple prefix-replacement pairs to apply to the path. Any
-/// delimiter character can be specified, and backslash escapes are honored.  `%~` and
-/// `%/{:~:$HOME}` should be roughly equivalent.
+///
+/// - `%d{:replacement:prefix:...}`
+/// - `%/{:replacement:prefix:...}` - takes multiple prefix-replacement pairs to apply to the path.
+///   Any delimiter character can be specified, and backslash escapes are honored, but no other
+///   expansion happens. `%~` and `%/{:~:$HOME}` should be roughly equivalent. Note, that this
+///   tries the `PWD` variable first, and if it's missing uses a canonical working directory, which
+///   may be different than that output by `%/`.
 pub fn expand(
     prompt: impl AsRef<str>,
     info: &mut impl Info,
@@ -754,5 +764,40 @@ mod expand_tests {
         result.clear();
         expand("%2/{:}", &mut info, &mut result).unwrap();
         assert_eq!(str::from_utf8(&result).unwrap(), "sub/dir");
+    }
+
+    #[test]
+    fn path_truncation() {
+        let mut result = Vec::new();
+
+        result.clear();
+        let mut info = TestInfo {
+            path: PathBuf::from("/home/user"),
+            dirty: true,
+            modified: false,
+            staged: false,
+            domain: Domain::Azure,
+            ahead: 0,
+            behind: 2,
+            branch: "feature",
+            stashes: 3,
+        };
+        expand("%/{:~:/home/user}", &mut info, &mut result).unwrap();
+        assert_eq!(str::from_utf8(&result).unwrap(), "~");
+
+        result.clear();
+        let mut info = TestInfo {
+            path: PathBuf::from("/"),
+            dirty: true,
+            modified: false,
+            staged: false,
+            domain: Domain::Azure,
+            ahead: 0,
+            behind: 2,
+            branch: "feature",
+            stashes: 3,
+        };
+        expand("%/{:}", &mut info, &mut result).unwrap();
+        assert_eq!(str::from_utf8(&result).unwrap(), "/");
     }
 }

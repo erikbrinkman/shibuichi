@@ -38,9 +38,14 @@ expansions, substituting them on the fly:
  - `x` - True if there are at least `n` stashes.
 
 Finally the directory command is extended in a slightly breaking change, where
-`%/{:replacement:prefix:...}` takes multiple prefix-replacement pairs to apply
-to the path. Any delimiter character can be specified, and backslash escapes
-are honored.  `%~` and `%/{:~:$HOME}` should be roughly equivalent.
+
+- `%d{:replacement:prefix:...}`
+- `%/{:replacement:prefix:...}` - takes multiple prefix-replacement pairs to
+  apply to the path. Any delimiter character can be specified, and backslash
+  escapes are honored, but no other expansion happens. `%~` and `%/{:~:$HOME}`
+  should be roughly equivalent. Note, that this tries the `PWD` variable first,
+  and if it's missing uses a canonical working directory, which may be
+  different than that output by `%/`.
 
 Installation
 ------------
@@ -64,6 +69,17 @@ precmd() {
 ```
 
 creates a simple prompt that shows your git branch.
+
+Alternatively you can pass several "prompts" and store them in `psvar` for
+referencing in your main prompt.
+
+```
+PROMPT=' %1v %2v %# '
+precmd() {
+  local IFS=$'\0'
+  psvar=($(shibuichi -0 '%r' '%p'))
+}
+```
 
 My current prompt is:
 ```

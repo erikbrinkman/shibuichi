@@ -3,7 +3,7 @@ use clap::Parser;
 use git2::{Branch, BranchType, Oid, Repository, StatusOptions};
 use shibuichi::{expand, util::ParsedScpUrl, Domain, Info};
 use std::env;
-use std::io::stdout;
+use std::io::{stdout, Write};
 use std::path::{Path, PathBuf};
 use url::Url;
 
@@ -11,9 +11,27 @@ use url::Url;
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
-    /// zsh style prompt to apply additional expansion to
+    /// Zsh style prompts to apply additional expansion to
+    ///
+    /// Multple prompts can be provided, if so each will be output delimited by `sep`. This can be
+    /// used to store these values in `$psvar` to allow usage in the main zsh prompt without having
+    /// to change the prompt itself.
     #[clap(value_parser)]
-    prompt: String,
+    prompts: Vec<String>,
+
+    /// Separator for each "prompt"
+    ///
+    /// If specifying multiple "prompts" they will be separated by this character. The default,
+    /// newline, is readable, but if you want variables with a newline in them you can use
+    /// alternate characters like null.
+    #[clap(short, long, default_value_t = '\n')]
+    sep: char,
+
+    /// Use null separator
+    ///
+    /// Use this flag to overwrite the separator with the null character
+    #[clap(short = '0', long)]
+    null: bool,
 }
 
 fn parse_git_origin(origin: &str) -> Option<String> {
@@ -174,7 +192,14 @@ impl Info for Cache {
         match &mut self.cached_path {
             Some(buf) => buf,
             buf @ None => {
-                *buf = Some(env::current_dir().unwrap_or_else(|_| PathBuf::new()));
+                let path = if let Ok(pwd) = env::var("PWD") {
+                    PathBuf::from(pwd)
+                } else if let Ok(cwd) = env::current_dir() {
+                    cwd
+                } else {
+                    PathBuf::new()
+                };
+                *buf = Some(path);
                 buf.as_ref().unwrap()
             }
         }
@@ -233,7 +258,19 @@ impl Info for Cache {
 
 fn main() {
     let args = Args::parse();
-    expand(args.prompt, &mut Cache::default(), &mut stdout()).unwrap();
+    let mut cache = Cache::default();
+    let mut out = stdout();
+    let mut not_first = false;
+    let sep = if args.null { '\0' } else { args.sep };
+    for prompt in args.prompts {
+        if not_first {
+            write!(out, "{}", sep).unwrap();
+        } else {
+            not_first = true;
+        }
+
+        expand(prompt, &mut cache, &mut out).unwrap();
+    }
 }
 
 #[cfg(test)]

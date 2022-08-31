@@ -1,4 +1,6 @@
 //! Module for expanding a prompt
+pub mod util;
+
 use nom::{
     branch::alt,
     bytes::complete::{escaped, is_not, tag, take_until},
@@ -13,8 +15,7 @@ use std::io;
 use std::io::Write;
 use std::path;
 use std::path::Path;
-
-pub mod util;
+use util::ContainsChar;
 
 #[derive(Debug, PartialEq)]
 struct Escape(char);
@@ -28,13 +29,14 @@ struct DateFormat<'a>(&'a str);
 #[derive(Debug, PartialEq)]
 struct NamedColor<'a> {
     num: Option<i64>,
-    foreground: bool,
+    code: char,
     name: &'a str,
 }
 
 #[derive(Debug, PartialEq)]
 struct PathPrefix<'a> {
     num: Option<i64>,
+    code: char,
     delim: char,
     prefix_subs: Vec<(&'a str, &'a str)>,
 }
@@ -52,9 +54,17 @@ struct Conditional<'a> {
 }
 
 #[derive(Debug, PartialEq)]
+struct AdvancedConditional<'a> {
+    code: char,
+    delim: char,
+    // NOTE we could make this slightly more efficient with a jagged array
+    conditions: Vec<Vec<Element<'a>>>,
+}
+
+#[derive(Debug, PartialEq)]
 struct Truncation<'a> {
     num: Option<i64>,
-    left: bool,
+    code: char,
     replacement: &'a str,
 }
 
@@ -67,6 +77,7 @@ enum Element<'a> {
     NamedColor(NamedColor<'a>),
     EscapeLiteral(EscapeLiteral<'a>),
     Conditional(Conditional<'a>),
+    AdvancedConditional(AdvancedConditional<'a>),
     Truncation(Truncation<'a>),
     PathPrefix(PathPrefix<'a>),
 }
@@ -86,7 +97,7 @@ fn date_format(input: &str) -> IResult<&str, DateFormat> {
 }
 
 fn named_color(input: &str) -> IResult<&str, NamedColor> {
-    let (input, (_, num, flag, _, name, _)) = tuple((
+    let (input, (_, num, code, _, name, _)) = tuple((
         char('%'),
         opt(i64),
         one_of("FK"),
@@ -94,18 +105,11 @@ fn named_color(input: &str) -> IResult<&str, NamedColor> {
         is_not("}"),
         char('}'),
     ))(input)?;
-    Ok((
-        input,
-        NamedColor {
-            num,
-            foreground: flag == 'F',
-            name,
-        },
-    ))
+    Ok((input, NamedColor { num, code, name }))
 }
 
 fn path_prefix(input: &str) -> IResult<&str, PathPrefix> {
-    let (input, (_, num, _, _, delim)) =
+    let (input, (_, num, code, _, delim)) =
         tuple((char('%'), opt(i64), one_of("d/"), char('{'), anychar))(input)?;
     let delim_str = format!("{}}}", delim);
     let (input, prefix_subs) = terminated(
@@ -123,6 +127,7 @@ fn path_prefix(input: &str) -> IResult<&str, PathPrefix> {
         input,
         PathPrefix {
             num,
+            code,
             delim,
             prefix_subs,
         },
@@ -137,20 +142,23 @@ fn escape_literal(input: &str) -> IResult<&str, EscapeLiteral> {
     )(input)
 }
 
-fn elements_until<'a>(stop: &'a Element) -> impl Fn(&str) -> IResult<&str, Vec<Element>> + 'a {
+fn elements_until<'a>(
+    stop: impl ContainsChar + 'a,
+) -> impl Fn(&str) -> IResult<&str, (Vec<Element>, char)> + 'a {
     move |mut inp| {
         let mut elems = Vec::new();
-        while {
+        loop {
             let (nxt, elem) = element(inp)?;
             inp = nxt;
-            if &elem == stop {
-                false
-            } else {
-                elems.push(elem);
-                true
+            match elem {
+                Element::Character(chr) if stop.contains(chr) => {
+                    return Ok((inp, (elems, chr)));
+                }
+                _ => {
+                    elems.push(elem);
+                }
             }
-        } {}
-        Ok((inp, elems))
+        }
     }
 }
 
@@ -162,8 +170,8 @@ fn conditional(input: &str) -> IResult<&str, Conditional> {
         one_of("!#?_C/c.~DdegjLlSTtvVwGymsopqx"),
         anychar,
     ))(input)?;
-    let (input, true_branch) = elements_until(&Element::Character(delim))(input)?;
-    let (input, false_branch) = elements_until(&Element::Character(')'))(input)?;
+    let (input, (true_branch, _)) = elements_until(delim)(input)?;
+    let (input, (false_branch, _)) = elements_until(')')(input)?;
     Ok((
         input,
         Conditional {
@@ -176,18 +184,39 @@ fn conditional(input: &str) -> IResult<&str, Conditional> {
     ))
 }
 
+fn advanced_conditional(input: &str) -> IResult<&str, AdvancedConditional> {
+    let (mut input, (code, delim)) = preceded(tag("%("), pair(one_of("opqx"), anychar))(input)?;
+    let delims = [delim, ')'];
+    let mut conditions = Vec::new();
+    let mut found = delim;
+    while found != ')' {
+        let (inp, (elems, fnd)) = elements_until(&delims)(input)?;
+        conditions.push(elems);
+        input = inp;
+        found = fnd;
+    }
+    Ok((
+        input,
+        AdvancedConditional {
+            code,
+            delim,
+            conditions,
+        },
+    ))
+}
+
 fn truncation(input: &str) -> IResult<&str, Truncation> {
-    let (input, (num, delim)) = preceded(char('%'), pair(opt(i64), one_of("<>")))(input)?;
-    let blocked = format!("\\{}", delim);
+    let (input, (num, code)) = preceded(char('%'), pair(opt(i64), one_of("<>")))(input)?;
+    let blocked = format!("\\{}", code);
     let (input, replacement) = terminated(
         alt((escaped(none_of(&*blocked), '\\', anychar), tag(""))),
-        char(delim),
+        char(code),
     )(input)?;
     Ok((
         input,
         Truncation {
             num,
-            left: delim == '<',
+            code,
             replacement,
         },
     ))
@@ -196,6 +225,7 @@ fn truncation(input: &str) -> IResult<&str, Truncation> {
 fn element(input: &str) -> IResult<&str, Element> {
     alt((
         map(truncation, Element::Truncation),
+        map(advanced_conditional, Element::AdvancedConditional),
         map(conditional, Element::Conditional),
         map(date_format, Element::DateFormat),
         map(named_color, Element::NamedColor),
@@ -266,10 +296,9 @@ impl<'a> Render for DateFormat<'a> {
 
 impl<'a> Render for NamedColor<'a> {
     fn render(&self, out: &mut impl Write, _: &mut impl Info) -> io::Result<()> {
-        let chr = if self.foreground { 'F' } else { 'K' };
         match self.num {
-            Some(num) => write!(out, "%{}{}{{{}}}", num, chr, self.name),
-            None => write!(out, "%{}{{{}}}", chr, self.name),
+            Some(num) => write!(out, "%{}{}{{{}}}", num, self.code, self.name),
+            None => write!(out, "%{}{{{}}}", self.code, self.name),
         }
     }
 }
@@ -370,12 +399,32 @@ impl<'a> Render for Conditional<'a> {
     }
 }
 
+impl<'a> Render for AdvancedConditional<'a> {
+    fn render(&self, out: &mut impl Write, info: &mut impl Info) -> io::Result<()> {
+        let ind = match self.code {
+            'o' => info.git_remote_domain() as usize,
+            'p' => info.git_remote_ahead(),
+            'q' => info.git_remote_behind(),
+            'x' => info.git_stashes(),
+            _ => panic!(),
+        };
+        if ind < self.conditions.len() {
+            self.conditions[ind].render(out, info)
+        } else {
+            self.conditions.last().unwrap().render(out, info)
+        }
+    }
+}
+
 impl<'a> Render for Truncation<'a> {
     fn render(&self, out: &mut impl Write, _: &mut impl Info) -> io::Result<()> {
-        let chr = if self.left { '<' } else { '>' };
         match self.num {
-            Some(num) => write!(out, "%{}{}{}{}", num, chr, self.replacement, chr),
-            None => write!(out, "%{}{}{}", chr, self.replacement, chr),
+            Some(num) => write!(
+                out,
+                "%{}{}{}{}",
+                num, self.code, self.replacement, self.code
+            ),
+            None => write!(out, "%{}{}{}", self.code, self.replacement, self.code),
         }
     }
 }
@@ -390,6 +439,7 @@ impl<'a> Render for Element<'a> {
             Element::NamedColor(color) => color.render(out, info),
             Element::EscapeLiteral(esc) => esc.render(out, info),
             Element::Conditional(cond) => cond.render(out, info),
+            Element::AdvancedConditional(cond) => cond.render(out, info),
             Element::Truncation(trunc) => trunc.render(out, info),
             Element::PathPrefix(path) => path.render(out, info),
         }
@@ -461,8 +511,8 @@ pub fn expand(
 #[cfg(test)]
 mod parse_tests {
     use super::{
-        parse, Conditional, DateFormat, Element, Escape, EscapeLiteral, NamedColor, NumericEscape,
-        PathPrefix, Truncation,
+        parse, AdvancedConditional, Conditional, DateFormat, Element, Escape, EscapeLiteral,
+        NamedColor, NumericEscape, PathPrefix, Truncation,
     };
 
     #[test]
@@ -492,13 +542,13 @@ mod parse_tests {
         let expected = [
             Element::NamedColor(NamedColor {
                 num: None,
-                foreground: true,
+                code: 'F',
                 name: "red",
             }),
             Element::Character(' '),
             Element::NamedColor(NamedColor {
                 num: Some(0),
-                foreground: false,
+                code: 'K',
                 name: "black",
             }),
         ];
@@ -511,17 +561,19 @@ mod parse_tests {
         let expected = [
             Element::PathPrefix(PathPrefix {
                 num: None,
+                code: 'd',
                 delim: '.',
                 prefix_subs: vec![],
             }),
             Element::Character(' '),
             Element::PathPrefix(PathPrefix {
                 num: Some(-2),
+                code: '/',
                 delim: ':',
                 prefix_subs: vec![("home", "/home/user")],
             }),
         ];
-        let elems = parse("%/{.} %-2/{:home:/home/user}");
+        let elems = parse("%d{.} %-2/{:home:/home/user}");
         assert_eq!(elems, expected);
     }
 
@@ -537,18 +589,18 @@ mod parse_tests {
         let expected = [
             Element::Truncation(Truncation {
                 num: Some(8),
-                left: true,
+                code: '<',
                 replacement: "..",
             }),
             Element::Truncation(Truncation {
                 num: None,
-                left: true,
+                code: '<',
                 replacement: "",
             }),
             Element::Character(' '),
             Element::Truncation(Truncation {
                 num: None,
-                left: false,
+                code: '>',
                 replacement: "\\>",
             }),
         ];
@@ -572,6 +624,21 @@ mod parse_tests {
             })],
         })];
         let elems = parse("%(C.a.%1(g#b#c))");
+        assert_eq!(elems, expected);
+    }
+
+    #[test]
+    fn advanced_conditional() {
+        let expected = [Element::AdvancedConditional(AdvancedConditional {
+            code: 'o',
+            delim: '.',
+            conditions: vec![
+                vec![Element::Character('a')],
+                vec![Element::Character('b')],
+                vec![Element::Character('c')],
+            ],
+        })];
+        let elems = parse("%(o.a.b.c)");
         assert_eq!(elems, expected);
     }
 }
@@ -645,12 +712,12 @@ mod expand_tests {
     fn empty_conditionals() {
         let mut result = Vec::new();
         expand(
-            "%(G.e.n) %(y.d.n)%(m#m#n)%(s.s.n) %(o.d.o)%1(o,g,n) %(p.a.n)%1(p.o.n) %(q.b.n)%1(q.o.n) %(x.s.n)%1(x.o.n)",
+            "%(G.e.n) %(y.d.n)%(m#m#n)%(s.s.n) %(o.d.o)%1(o,g,n)%(o.d.g._) %(p.a.n)%1(p.o.n) %(q.b.n)%1(q.o.n) %(x.s.n)%1(x.o.n)",
             &mut NoInfo,
             &mut result,
         )
         .unwrap();
-        assert_eq!(str::from_utf8(&result).unwrap(), "n nnn dn an bn sn");
+        assert_eq!(str::from_utf8(&result).unwrap(), "n nnn dnd an bn sn");
     }
 
     struct TestInfo {
@@ -701,7 +768,7 @@ mod expand_tests {
     #[test]
     fn git() {
         let mut result = Vec::new();
-        let prompt = "%(G.%(y.d.)%(m.m.)%(s.s.) %0(o.g.)%1(o.h.)%2(o.l.)%3(o.b.)%4(o.a.) %1(p.%2(p.^%p.^).)%1(q.%2(q.v%q.v).)%1(x.%2(x.s%x.s).) %r.)";
+        let prompt = "%(G.%(y.d.)%(m.m.)%(s.s.) %(o.g.h.l.b.a.) %1(p.%2(p.^%p.^).)%1(q.%2(q.v%q.v).)%1(x.%2(x.s%x.s).) %r.)";
 
         result.clear();
         let mut info = TestInfo {

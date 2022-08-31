@@ -37,6 +37,12 @@ expansions, substituting them on the fly:
    the current branch.
  - `x` - True if there are at least `n` stashes.
 
+The conditional expansion for `o`, `p`, `q`, and `x` is extended so that if no
+number is passed, you can use a conditional of the form
+`%(x.0-text.1-text.2-text...)` to make a branch for each possible value. If the
+integer is larger than the the number of conditionals, the final text will be
+used.
+
 Finally the directory command is extended in a slightly breaking change, where
 
 - `%d{:replacement:prefix:...}`

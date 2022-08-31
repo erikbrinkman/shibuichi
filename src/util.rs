@@ -78,3 +78,37 @@ mod tests {
         assert_eq!(ParsedScpUrl::parse("git@github.com:p@th"), None);
     }
 }
+
+pub trait ContainsChar {
+    fn contains(&self, chr: char) -> bool;
+}
+
+impl ContainsChar for char {
+    fn contains(&self, chr: char) -> bool {
+        self == &chr
+    }
+}
+
+impl ContainsChar for str {
+    fn contains(&self, chr: char) -> bool {
+        self.contains(chr)
+    }
+}
+
+impl ContainsChar for [char] {
+    fn contains(&self, chr: char) -> bool {
+        self.contains(&chr)
+    }
+}
+
+impl<const N: usize> ContainsChar for [char; N] {
+    fn contains(&self, chr: char) -> bool {
+        self.as_slice().contains(&chr)
+    }
+}
+
+impl<'a, T: ContainsChar> ContainsChar for &'a T {
+    fn contains(&self, chr: char) -> bool {
+        (*self).contains(chr)
+    }
+}

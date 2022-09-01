@@ -37,8 +37,8 @@ expansions, substituting them on the fly:
    the current branch.
  - `x` - True if there are at least `n` stashes.
 
-The conditional expansion for `o`, `p`, `q`, and `x` is extended so that if no
-number is passed, you can use a conditional of the form
+The conditional expansions for `o`, `p`, `q`, and `x` are extended so that if
+no number is passed, you can use a conditional of the form
 `%(x.0-text.1-text.2-text...)` to make a branch for each possible value. If the
 integer is larger than the the number of conditionals, the final text will be
 used.
@@ -63,10 +63,9 @@ cargo install shibuichi
 Usage
 -----
 
-Replace your zsh `PROMPT` `precmd` by processing it with `shibuichi` first.
-This then allows you to use the expanded escape sequences.
-
-For example:
+The easiest way to use `shibuichi` is to pass your old prompt through it in
+your `precmd` function and then tweak the command with your extensions. For
+example:
 
 ```
 precmd() {
@@ -87,23 +86,33 @@ precmd() {
 }
 ```
 
-My current prompt is:
+Note however that `zsh` won't further expand any referenced variables, so you
+should only include custom expansions, but not builtin ones.
+
+Both versions make it possible to be fault tolerant to the existence of
+`shibuishi` by either falling back to a default prompt if it fails, or adding
+branches for the existence of elements of `psvar`. The latter can be a bit
+trickier because no expansion happens after taking a string from `psvar`, so
+any expansion must be behind conditionals of the form `%x(V...)`.
+
+### Detailed Example
+
+My current prompt, inspired by silver, is:
+
 ```
-%F{white}%K{black}%(?.%1(j.   .). %1(j..)  ) %n@%m %F{black}%K{blue}%F{black} %~ %F{blue}%(G.%(y.%K{yellow}.%K{green})%F{black} %0(o..)%1(o..)%2(o..)%3(o..)%4(o.ﴃ.)%1(p. .%1(q. .%1(x. .)))%1(p.%2(p.%3(p.%p.).).)%1(q.%2(q.%3(q.%q.).).)%1(x.%2(x.%3(x.%x.).).) %r%(m. .%(s. .))%(m..)%(s..) %(y.%F{yellow}.%F{green}).)%k%f 
+%F{white}%K{black}%(?.%1(j.   .). %1(j..)  ) %n@%m %F{black}%K{blue}%F{black} %/{::$HOME} %F{blue}%(G.%(y.%K{yellow}.%K{green})%F{black} %(o.....ﴃ.)%1(p. .%1(q. .%1(x. .)))%(p....%p)%(q....%q)%(x....%x) %r%(m. .%(s. .))%(m..)%(s..) %(y.%F{yellow}.%F{green}).)%k%f 
 ```
 
 Design
 ------
 
-This was designed to be as agnostic to prompt style as possible. In particular,
-this shouldn't make any choices about layout preferences, and instead seek to
-provide manipulable output.
+There were two major design decisions that influenced `shibuichi`:
 
-To Do
------
-
-- [ ] I have yet to come up with a good way of handling path prefixes, which
-  would help emulate more of silvers features.
+1. `zsh` prompt expansion should handle everything it can. This shouldn't
+   reimplement terminal colors, exit code checking, timestamps, etc.
+2. This should be agnostic to prompt style. In particular, this shouldn't make
+   any choices about layout preferences, or character choices, and instead seek
+   to provide the same generality as `zsh` prompt expansion.
 
 Naming
 ------

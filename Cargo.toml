@@ -2,12 +2,11 @@
 name = "shibuichi"
 description = "a simple zsh prompt preprocessor to add git integration"
 license = "MIT"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 clap = { version = "3", features = ["derive"] }
-dirs = "3"
 git2 = "0.14"
 nom = "7"
 url = "2.2"

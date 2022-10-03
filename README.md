@@ -3,6 +3,7 @@ Shibuichi
 [![crates.io](https://img.shields.io/crates/v/shibuichi)](https://crates.io/crates/shibuichi)
 [![docs](https://docs.rs/shibuichi/badge.svg)](https://docs.rs/shibuichi)
 [![license](https://img.shields.io/github/license/erikbrinkman/shibuichi)](LICENSE)
+[![tests](https://github.com/erikbrinkman/shibuichi/actions/workflows/rust.yml/badge.svg)](https://github.com/erikbrinkman/shibuichi/actions/workflows/rust.yml)
 
 A custom zsh prompt expander written in rust.
 

@@ -401,9 +401,8 @@ impl<'a> Render for Conditional<'a> {
             }
             code => {
                 write!(out, "%")?;
-                match self.num {
-                    Some(num) => write!(out, "{}", num)?,
-                    None => (),
+                if let Some(num) = self.num {
+                    write!(out, "{}", num)?;
                 };
                 write!(out, "({}{}", code, self.delim)?;
                 self.true_branch.render(out, info)?;

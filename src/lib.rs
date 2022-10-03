@@ -1,4 +1,5 @@
 //! Module for expanding a prompt
+#![warn(missing_docs)]
 pub mod util;
 
 use nom::{
@@ -241,24 +242,39 @@ fn element(input: &str) -> IResult<&str, Element> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Domain {
+    /// Generic domain (not one of the others)
     Git = 0,
+    /// `github.com`
     Github = 1,
+    /// `gitlab.com`
     Gitlab = 2,
+    /// `bitbucket.org`
     BitBucket = 3,
+    /// `dev.azure.com`
     Azure = 4,
 }
 
 /// Trait for any information necessary to proper expansion
 pub trait Info {
+    /// Get the current path for display
     fn current_path(&mut self) -> &Path;
+    /// Return true if inside a git repository
     fn git_exists(&mut self) -> bool;
+    /// Return true if git repo is dirty
     fn git_dirty(&mut self) -> bool;
+    /// Return true if git repo has modified files
     fn git_modified(&mut self) -> bool;
+    /// Return true if git repo has staged files
     fn git_staged(&mut self) -> bool;
+    /// Get remote domain of git repo
     fn git_remote_domain(&mut self) -> Domain;
+    /// Get number of commits current branch is ahead of remote
     fn git_remote_ahead(&mut self) -> usize;
+    /// Get number of commits current branch is behind remote
     fn git_remote_behind(&mut self) -> usize;
+    /// Get name of the current git branch
     fn git_branch(&mut self) -> &str;
+    /// Get the number of current stashes
     fn git_stashes(&mut self) -> usize;
 }
 

@@ -79,7 +79,13 @@ mod tests {
     }
 }
 
+/// Generic trait for anything that "has" chars
+///
+/// This is similar to the [std::str::pattern::Pattern] trait, except that that's still
+/// experimental, and currently models the inverse relation of this, but in principle these are
+/// bijections.
 pub trait ContainsChar {
+    /// Return true if chr is present in self
     fn contains(&self, chr: char) -> bool;
 }
 

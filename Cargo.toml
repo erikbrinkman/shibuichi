@@ -6,7 +6,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-clap = { version = "4.0", features = ["derive"] }
+clap = { version = "4.0", features = [ "derive", "wrap_help" ] }
 git2 = "0.14"
 nom = "7.1"
 url = "2.2"

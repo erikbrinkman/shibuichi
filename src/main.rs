@@ -3,7 +3,7 @@ use clap::Parser;
 use git2::{Branch, BranchType, Oid, Repository, StatusOptions};
 use shibuichi::{expand, util::ParsedScpUrl, Domain, Info};
 use std::env;
-use std::io::{stdout, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use url::Url;
 
@@ -259,7 +259,7 @@ impl Info for Cache {
 fn main() {
     let args = Args::parse();
     let mut cache = Cache::default();
-    let mut out = stdout();
+    let mut out = io::stdout().lock();
     let mut not_first = false;
     let sep = if args.null { '\0' } else { args.sep };
     for prompt in args.prompts {

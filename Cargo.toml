@@ -7,11 +7,11 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4.0", features = [ "derive", "wrap_help" ] }
-git2 = "0.14"
+git2 = "0.16"
 nom = "7.1"
 url = "2.2"
 
 [features]
 default = []
-vendored-openssl = [ "git2/vendored-openssl" ]
-vendored-libgit2 = [ "git2/vendored-libgit2" ]
+vendored-openssl = ["git2/vendored-openssl"]
+vendored-libgit2 = ["git2/vendored-libgit2"]

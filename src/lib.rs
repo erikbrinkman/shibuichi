@@ -1,5 +1,7 @@
 //! Module for expanding a prompt
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
+#![warn(missing_docs, clippy::pedantic)]
+
 pub mod util;
 
 use nom::{
@@ -112,7 +114,7 @@ fn named_color(input: &str) -> IResult<&str, NamedColor> {
 fn path_prefix(input: &str) -> IResult<&str, PathPrefix> {
     let (input, (_, num, code, _, delim)) =
         tuple((char('%'), opt(i64), one_of("d/"), char('{'), anychar))(input)?;
-    let delim_str = format!("{}}}", delim);
+    let delim_str = format!("{delim}}}");
     let (input, prefix_subs) = terminated(
         separated_list0(
             char(delim),
@@ -208,7 +210,7 @@ fn advanced_conditional(input: &str) -> IResult<&str, AdvancedConditional> {
 
 fn truncation(input: &str) -> IResult<&str, Truncation> {
     let (input, (num, code)) = preceded(char('%'), pair(opt(i64), one_of("<>")))(input)?;
-    let blocked = format!("\\{}", code);
+    let blocked = format!("\\{code}");
     let (input, replacement) = terminated(
         alt((escaped(none_of(&*blocked), '\\', anychar), tag(""))),
         char(code),
@@ -238,7 +240,7 @@ fn element(input: &str) -> IResult<&str, Element> {
     ))(input)
 }
 
-/// The domain of the upstream remote, defaults to [Domain::Git]
+/// The domain of the upstream remote, defaults to [`Domain::Git`]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Domain {
@@ -289,7 +291,7 @@ impl Render for Escape {
             Escape('p') => write!(out, "{}", info.git_remote_ahead()),
             Escape('q') => write!(out, "{}", info.git_remote_behind()),
             Escape('x') => write!(out, "{}", info.git_stashes()),
-            Escape(chr) => write!(out, "%{}", chr),
+            Escape(chr) => write!(out, "%{chr}"),
         }
     }
 }
@@ -297,8 +299,8 @@ impl Render for Escape {
 impl Render for NumericEscape {
     fn render(&self, out: &mut impl Write, _: &mut impl Info) -> io::Result<()> {
         match self {
-            NumericEscape(Some(num), chr) => write!(out, "%{}{}", num, chr),
-            NumericEscape(None, chr) => write!(out, "%{}", chr),
+            NumericEscape(Some(num), chr) => write!(out, "%{num}{chr}"),
+            NumericEscape(None, chr) => write!(out, "%{chr}"),
         }
     }
 }
@@ -306,7 +308,7 @@ impl Render for NumericEscape {
 impl<'a> Render for DateFormat<'a> {
     fn render(&self, out: &mut impl Write, _: &mut impl Info) -> io::Result<()> {
         let DateFormat(format) = self;
-        write!(out, "%D{{{}}}", format)
+        write!(out, "%D{{{format}}}")
     }
 }
 
@@ -333,7 +335,7 @@ impl<'a> Render for PathPrefix<'a> {
                 let mut comps = VecDeque::new();
                 for comp in wd.iter() {
                     comps.push_back(comp);
-                    if comps.len() == (num + 1) as usize {
+                    if comps.len() as i64 == (num + 1) {
                         comps.pop_front();
                     }
                 }
@@ -343,7 +345,7 @@ impl<'a> Render for PathPrefix<'a> {
                 let mut comps = Vec::new();
                 for comp in wd.iter() {
                     comps.push(comp);
-                    if comps.len() == -num as usize {
+                    if comps.len() as i64 == -num {
                         break;
                     }
                 }
@@ -358,14 +360,14 @@ impl<'a> Render for PathPrefix<'a> {
             } else {
                 lossy.strip_suffix(path::MAIN_SEPARATOR).unwrap_or(&lossy)
             };
-        write!(out, "{}", output)
+        write!(out, "{output}")
     }
 }
 
 impl<'a> Render for EscapeLiteral<'a> {
     fn render(&self, out: &mut impl Write, _: &mut impl Info) -> io::Result<()> {
         let EscapeLiteral(literal) = self;
-        write!(out, "%{{{}%}}", literal)
+        write!(out, "%{{{literal}%}}")
     }
 }
 
@@ -402,9 +404,9 @@ impl<'a> Render for Conditional<'a> {
             code => {
                 write!(out, "%")?;
                 if let Some(num) = self.num {
-                    write!(out, "{}", num)?;
+                    write!(out, "{num}")?;
                 };
-                write!(out, "({}{}", code, self.delim)?;
+                write!(out, "({code}{}", self.delim)?;
                 self.true_branch.render(out, info)?;
                 write!(out, "{}", self.delim)?;
                 self.false_branch.render(out, info)?;
@@ -447,7 +449,7 @@ impl<'a> Render for Truncation<'a> {
 impl<'a> Render for Element<'a> {
     fn render(&self, out: &mut impl Write, info: &mut impl Info) -> io::Result<()> {
         match self {
-            Element::Character(chr) => write!(out, "{}", chr),
+            Element::Character(chr) => write!(out, "{chr}"),
             Element::Escape(esc) => esc.render(out, info),
             Element::NumericEscape(num_esc) => num_esc.render(out, info),
             Element::DateFormat(dfmt) => dfmt.render(out, info),
@@ -512,6 +514,10 @@ fn parse(input: &str) -> Vec<Element> {
 ///   expansion happens. `%~` and `%/{:~:$HOME}` should be roughly equivalent. Note, that this
 ///   tries the `PWD` variable first, and if it's missing uses a canonical working directory, which
 ///   may be different than that output by `%/`.
+///
+/// # Errors
+///
+/// When there are problems writing to `out`.
 pub fn expand(
     prompt: impl AsRef<str>,
     info: &mut impl Info,

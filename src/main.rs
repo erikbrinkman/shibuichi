@@ -1,4 +1,7 @@
 //! The binary to run prompt substitution
+#![forbid(unsafe_code)]
+#![warn(missing_docs, clippy::pedantic)]
+
 use clap::Parser;
 use git2::{Branch, BranchType, Oid, Repository, StatusOptions};
 use shibuichi::{expand, util::ParsedScpUrl, Domain, Info};
@@ -45,18 +48,26 @@ fn parse_git_origin(origin: &str) -> Option<String> {
 }
 
 #[derive(Default)]
-struct CachedRepo(Option<Option<Repository>>);
+enum CachedRepo {
+    #[default]
+    Unknown,
+    NoRepo,
+    Repo(Repository),
+}
 
 impl CachedRepo {
     fn get(&mut self) -> Option<&mut Repository> {
-        match &mut self.0 {
-            Some(repo) => repo,
-            repo @ None => {
-                *repo = Some(Repository::discover(".").ok());
-                repo.as_mut().unwrap()
+        match self {
+            CachedRepo::NoRepo => None,
+            CachedRepo::Repo(repo) => Some(repo),
+            CachedRepo::Unknown => {
+                *self = match Repository::discover(".") {
+                    Ok(repo) => CachedRepo::Repo(repo),
+                    Err(_) => CachedRepo::NoRepo,
+                };
+                self.get()
             }
         }
-        .as_mut()
     }
 
     fn branch(&mut self) -> Option<String> {
@@ -97,10 +108,10 @@ impl CachedRepo {
         let local = head.target()?;
         let local_branch = repo.find_branch(branch, BranchType::Local).ok()?;
         let upstream_branch = local_branch.upstream().ok()?;
-        let (ahead, behind) =
+        let (num_ahead, num_behind) =
             CachedRepo::get_ahead_behind(repo, local, &upstream_branch).unwrap_or_default();
         let domain = CachedRepo::get_domain(repo, &upstream_branch).unwrap_or(Domain::Git);
-        Some((domain, ahead, behind))
+        Some((domain, num_ahead, num_behind))
     }
 
     fn stashes(&mut self) -> usize {
@@ -264,7 +275,7 @@ fn main() {
     let sep = if args.null { '\0' } else { args.sep };
     for prompt in args.prompts {
         if not_first {
-            write!(out, "{}", sep).unwrap();
+            write!(out, "{sep}").unwrap();
         } else {
             not_first = true;
         }

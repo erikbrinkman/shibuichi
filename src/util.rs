@@ -13,6 +13,7 @@ pub struct ParsedScpUrl<'a> {
 
 impl<'a> ParsedScpUrl<'a> {
     /// Parse an SCP style url
+    #[must_use]
     pub fn parse(raw: &'a str) -> Option<Self> {
         let (raw_username, rest) = raw.split_once('@')?;
         let (raw_host, raw_path) = rest.split_once(':')?;
@@ -32,16 +33,19 @@ impl<'a> ParsedScpUrl<'a> {
     }
 
     /// Get the user name
+    #[must_use]
     pub fn username(&self) -> &'a str {
         self.raw_username
     }
 
     /// Get the host
+    #[must_use]
     pub fn host(&self) -> &'a str {
         self.raw_host
     }
 
     /// Get the path
+    #[must_use]
     pub fn path(&self) -> &'a str {
         self.raw_path
     }
@@ -81,7 +85,7 @@ mod tests {
 
 /// Generic trait for anything that "has" chars
 ///
-/// This is similar to the [std::str::pattern::Pattern] trait, except that that's still
+/// This is similar to the [`Pattern`][std::str::pattern::Pattern] trait, except that that's still
 /// experimental, and currently models the inverse relation of this, but in principle these are
 /// bijections.
 pub trait ContainsChar {

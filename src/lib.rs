@@ -333,9 +333,9 @@ impl<'a> Render for PathPrefix<'a> {
             0 => (),
             num @ 1..=i64::MAX => {
                 let mut comps = VecDeque::new();
-                for comp in wd.iter() {
+                for comp in &wd {
                     comps.push_back(comp);
-                    if comps.len() as i64 == (num + 1) {
+                    if comps.len() == (num + 1).try_into().unwrap_or(usize::MAX) {
                         comps.pop_front();
                     }
                 }
@@ -343,9 +343,9 @@ impl<'a> Render for PathPrefix<'a> {
             }
             num @ i64::MIN..=-1 => {
                 let mut comps = Vec::new();
-                for comp in wd.iter() {
+                for comp in &wd {
                     comps.push(comp);
-                    if comps.len() as i64 == -num {
+                    if comps.len() == (-num).try_into().unwrap_or(usize::MAX) {
                         break;
                     }
                 }
@@ -373,7 +373,7 @@ impl<'a> Render for EscapeLiteral<'a> {
 
 impl<T: Render> Render for [T] {
     fn render(&self, out: &mut impl Write, info: &mut impl Info) -> io::Result<()> {
-        for elem in self.iter() {
+        for elem in self {
             elem.render(out, info)?;
         }
         Ok(())
@@ -391,9 +391,9 @@ impl<'a> Render for Conditional<'a> {
                     'm' => info.git_modified(),
                     's' => info.git_staged(),
                     'o' => info.git_remote_domain() as i64 == num,
-                    'p' => info.git_remote_ahead() as i64 >= num,
-                    'q' => info.git_remote_behind() as i64 >= num,
-                    'x' => info.git_stashes() as i64 >= num,
+                    'p' => info.git_remote_ahead().try_into().unwrap_or(i64::MAX) >= num,
+                    'q' => info.git_remote_behind().try_into().unwrap_or(i64::MAX) >= num,
+                    'x' => info.git_stashes().try_into().unwrap_or(i64::MAX) >= num,
                     _ => panic!(),
                 } {
                     self.true_branch.render(out, info)

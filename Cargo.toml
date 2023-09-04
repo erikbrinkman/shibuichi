@@ -2,7 +2,7 @@
 name = "shibuichi"
 description = "a simple zsh prompt preprocessor to add git integration"
 license = "MIT"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 
 [dependencies]

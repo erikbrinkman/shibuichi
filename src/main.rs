@@ -164,34 +164,30 @@ impl CachedRepo {
 
 #[derive(Default)]
 struct Cache {
-    cached_path: Option<PathBuf>,
-    cached_repo: CachedRepo,
-    cached_remote_info: Option<(Domain, usize, usize)>,
-    cached_branch: Option<String>,
-    cached_stashes: Option<usize>,
-    cached_status: Option<(bool, bool, bool)>,
+    path: Option<PathBuf>,
+    repo: CachedRepo,
+    remote_info: Option<(Domain, usize, usize)>,
+    branch: Option<String>,
+    stashes: Option<usize>,
+    status: Option<(bool, bool, bool)>,
 }
 
 impl Cache {
     fn git_remote_info(&mut self) -> &(Domain, usize, usize) {
-        match &mut self.cached_remote_info {
+        match &mut self.remote_info {
             Some(info) => info,
             info @ None => {
-                *info = Some(
-                    self.cached_repo
-                        .remote_info()
-                        .unwrap_or((Domain::Git, 0, 0)),
-                );
+                *info = Some(self.repo.remote_info().unwrap_or((Domain::Git, 0, 0)));
                 info.as_ref().unwrap()
             }
         }
     }
 
     fn git_status(&mut self) -> &(bool, bool, bool) {
-        match &mut self.cached_status {
+        match &mut self.status {
             Some(status) => status,
             status @ None => {
-                *status = Some(self.cached_repo.status().unwrap_or_default());
+                *status = Some(self.repo.status().unwrap_or_default());
                 status.as_ref().unwrap()
             }
         }
@@ -200,7 +196,7 @@ impl Cache {
 
 impl Info for Cache {
     fn current_path(&mut self) -> &Path {
-        match &mut self.cached_path {
+        match &mut self.path {
             Some(buf) => buf,
             buf @ None => {
                 let path = if let Ok(pwd) = env::var("PWD") {
@@ -218,7 +214,7 @@ impl Info for Cache {
     }
 
     fn git_exists(&mut self) -> bool {
-        self.cached_repo.get().is_some()
+        self.repo.get().is_some()
     }
 
     fn git_dirty(&mut self) -> bool {
@@ -246,20 +242,20 @@ impl Info for Cache {
     }
 
     fn git_branch(&mut self) -> &str {
-        match &mut self.cached_branch {
+        match &mut self.branch {
             Some(branch) => branch,
             branch @ None => {
-                *branch = Some(self.cached_repo.branch().unwrap_or_default());
+                *branch = Some(self.repo.branch().unwrap_or_default());
                 branch.as_ref().unwrap()
             }
         }
     }
 
     fn git_stashes(&mut self) -> usize {
-        match &mut self.cached_stashes {
+        match &mut self.stashes {
             Some(stashes) => *stashes,
             stashes @ None => {
-                let res = self.cached_repo.stashes();
+                let res = self.repo.stashes();
                 *stashes = Some(res);
                 res
             }

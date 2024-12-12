@@ -305,14 +305,14 @@ impl Render for NumericEscape {
     }
 }
 
-impl<'a> Render for DateFormat<'a> {
+impl Render for DateFormat<'_> {
     fn render(&self, out: &mut impl Write, _: &mut impl Info) -> io::Result<()> {
         let DateFormat(format) = self;
         write!(out, "%D{{{format}}}")
     }
 }
 
-impl<'a> Render for NamedColor<'a> {
+impl Render for NamedColor<'_> {
     fn render(&self, out: &mut impl Write, _: &mut impl Info) -> io::Result<()> {
         match self.num {
             Some(num) => write!(out, "%{}{}{{{}}}", num, self.code, self.name),
@@ -321,7 +321,7 @@ impl<'a> Render for NamedColor<'a> {
     }
 }
 
-impl<'a> Render for PathPrefix<'a> {
+impl Render for PathPrefix<'_> {
     fn render(&self, out: &mut impl Write, info: &mut impl Info) -> io::Result<()> {
         let mut wd = info.current_path().to_owned();
         for (alias, prefix) in &self.prefix_subs {
@@ -364,7 +364,7 @@ impl<'a> Render for PathPrefix<'a> {
     }
 }
 
-impl<'a> Render for EscapeLiteral<'a> {
+impl Render for EscapeLiteral<'_> {
     fn render(&self, out: &mut impl Write, _: &mut impl Info) -> io::Result<()> {
         let EscapeLiteral(literal) = self;
         write!(out, "%{{{literal}%}}")
@@ -380,7 +380,7 @@ impl<T: Render> Render for [T] {
     }
 }
 
-impl<'a> Render for Conditional<'a> {
+impl Render for Conditional<'_> {
     fn render(&self, out: &mut impl Write, info: &mut impl Info) -> io::Result<()> {
         match self.code {
             code @ ('G' | 'y' | 'm' | 's' | 'o' | 'p' | 'q' | 'x') => {
@@ -416,7 +416,7 @@ impl<'a> Render for Conditional<'a> {
     }
 }
 
-impl<'a> Render for AdvancedConditional<'a> {
+impl Render for AdvancedConditional<'_> {
     fn render(&self, out: &mut impl Write, info: &mut impl Info) -> io::Result<()> {
         let ind = match self.code {
             'o' => info.git_remote_domain() as usize,
@@ -433,7 +433,7 @@ impl<'a> Render for AdvancedConditional<'a> {
     }
 }
 
-impl<'a> Render for Truncation<'a> {
+impl Render for Truncation<'_> {
     fn render(&self, out: &mut impl Write, _: &mut impl Info) -> io::Result<()> {
         match self.num {
             Some(num) => write!(
@@ -446,7 +446,7 @@ impl<'a> Render for Truncation<'a> {
     }
 }
 
-impl<'a> Render for Element<'a> {
+impl Render for Element<'_> {
     fn render(&self, out: &mut impl Write, info: &mut impl Info) -> io::Result<()> {
         match self {
             Element::Character(chr) => write!(out, "{chr}"),
@@ -496,14 +496,14 @@ fn parse(input: &str) -> Vec<Element> {
 /// - `m` - True if the git repository has modified files.
 /// - `s` - True if the git repository has staged files.
 /// - `o` - True if the domain of the remote tracking origin number matches `n`, where 0 is
-/// reserved for all other domains (see [Domain]):
+///   reserved for all other domains (see [Domain]):
 ///    1. `github.com`
 ///    2. `gitlab.com`
 ///    3. `bitbucket.org`
 ///    4. `dev.azure.com`
 /// - `p` - True if the remote tracking branch is at least `n` commits *ahead* of the current branch.
 /// - `q` - True if the remote tracking branch is at least `n` commits *behind* of the current
-/// branch.
+///   branch.
 /// - `x` - True if there are at least `n` stashes.
 ///
 /// Finally the directory command is extended in a slightly breaking change, where

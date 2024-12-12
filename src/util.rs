@@ -51,38 +51,6 @@ impl<'a> ParsedScpUrl<'a> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::ParsedScpUrl;
-
-    #[test]
-    fn git_standard() {
-        let parsed = ParsedScpUrl::parse("git@github.com:username/repo.git").unwrap();
-        assert_eq!(parsed.username(), "git");
-        assert_eq!(parsed.host(), "github.com");
-        assert_eq!(parsed.path(), "username/repo.git");
-    }
-
-    #[test]
-    fn degenerate() {
-        let parsed = ParsedScpUrl::parse("@:").unwrap();
-        assert_eq!(parsed.username(), "");
-        assert_eq!(parsed.host(), "");
-        assert_eq!(parsed.path(), "");
-    }
-
-    #[test]
-    fn parse_errors() {
-        assert_eq!(ParsedScpUrl::parse(""), None);
-        assert_eq!(ParsedScpUrl::parse(":"), None);
-        assert_eq!(ParsedScpUrl::parse("@"), None);
-        assert_eq!(ParsedScpUrl::parse("g:t@github.com:path"), None);
-        assert_eq!(ParsedScpUrl::parse("git@github@com:path"), None);
-        assert_eq!(ParsedScpUrl::parse("git@github.com:p:th"), None);
-        assert_eq!(ParsedScpUrl::parse("git@github.com:p@th"), None);
-    }
-}
-
 /// Generic trait for anything that "has" chars
 ///
 /// This is similar to the [`Pattern`][std::str::pattern::Pattern] trait, except that that's still
@@ -117,8 +85,40 @@ impl<const N: usize> ContainsChar for [char; N] {
     }
 }
 
-impl<'a, T: ContainsChar> ContainsChar for &'a T {
+impl<T: ContainsChar> ContainsChar for &T {
     fn contains(&self, chr: char) -> bool {
         (*self).contains(chr)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ParsedScpUrl;
+
+    #[test]
+    fn git_standard() {
+        let parsed = ParsedScpUrl::parse("git@github.com:username/repo.git").unwrap();
+        assert_eq!(parsed.username(), "git");
+        assert_eq!(parsed.host(), "github.com");
+        assert_eq!(parsed.path(), "username/repo.git");
+    }
+
+    #[test]
+    fn degenerate() {
+        let parsed = ParsedScpUrl::parse("@:").unwrap();
+        assert_eq!(parsed.username(), "");
+        assert_eq!(parsed.host(), "");
+        assert_eq!(parsed.path(), "");
+    }
+
+    #[test]
+    fn parse_errors() {
+        assert_eq!(ParsedScpUrl::parse(""), None);
+        assert_eq!(ParsedScpUrl::parse(":"), None);
+        assert_eq!(ParsedScpUrl::parse("@"), None);
+        assert_eq!(ParsedScpUrl::parse("g:t@github.com:path"), None);
+        assert_eq!(ParsedScpUrl::parse("git@github@com:path"), None);
+        assert_eq!(ParsedScpUrl::parse("git@github.com:p:th"), None);
+        assert_eq!(ParsedScpUrl::parse("git@github.com:p@th"), None);
     }
 }
